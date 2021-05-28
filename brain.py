@@ -1,5 +1,15 @@
 '''
 https://realpython.com/intro-to-python-threading
+
+note, for searching through queues, i recommend doing this method from 
+https://stackoverflow.com/questions/16686292/examining-items-in-a-python-queue
+myQ = queue.Queue()
+for job in my_jobs:
+    myQ.put(job)
+
+snapshot_queue = list(myQ.queue)
+
+that should provide you with a copy of the underlying queue that is iterable instead of using myQ.queue directly which would be 'live'
 '''
 ### packages
 import os
@@ -11,74 +21,93 @@ import subprocess
 import queue
 import threading
 import logging
+import drmaa
 
 ### local files
 
 
-def queue_job(individual, testcase_number, output_dir, todoQ):
+def frozen_snapshot_queue(my_queue):
+    '''
+    https://stackoverflow.com/questions/16686292/examining-items-in-a-python-queue
+    the queue.Queue object has a queue attribute which is a deque which can be iterated over,
+    BUT using the deque will keep it as a 'live' version which can change as you iterate over it.
+    Convert it to a list to freeze the copy.
+    '''
+    return list(my_queue.queue)
+
+
+def react_job_status(drmaa_session,
+                     job,
+                     todoQ=None,
+                     runningQ=None,
+                     finishedQ=None):
+    job_status = drmaa_session.jobStatus(job['jobid'])
+
+    if job_status in [drmaa.JobState.UNDETERMINED,
+                      drmaa.JobState.QUEUED_ACTIVE,
+                      drmaa.JobState.SYSTEM_ON_HOLD,
+                      drmaa.JobState.USER_ON_HOLD,
+                      drmaa.JobState.USER_SYSTEM_ON_HOLD]:
+        # add back to todoQ
+        todoQ.put(job, block=False)
+
+    elif job_status in [drmaa.JobState.RUNNING]:
+        runningQ.put(job, block=False)
+
+    elif job_status in [drmaa.JobState.SYSTEM_SUSPENDED,
+                        drmaa.JobState.USER_SUSPENDED,
+                        drmaa.JobState.DONE,
+                        drmaa.JobState.FAILED]:
+        finishedQ.put(job, block=False)
+
+    else:
+        logging.critical("UH WHOT? Got this unexpected job status %s" % (str(job_status)))
+
+
+
+def queue_job(individual, testcase_number, output_dir, todoQ, drmaa_session):
     logging.debug("Add to ToDo - Start - %s for __sec" % (individual))
     sleep_time = np.random.randint(30,90)
-    output_file = os.path.join(output_dir, "%s_%i.txt" % (individual, testcase_number))
+    output_file = os.path.join(os.getcwd(), output_dir, "%s_%i.txt" % (individual, testcase_number))
+
+    # https://drmaa-python.readthedocs.io/en/latest/tutorials.html#running-a-job
+    jt = drmaa_session.createJobTemplate()
+    jt.remoteCommand = os.path.join(os.getcwd(), 'run.sh')
+    jt.args = [sleep_time, output_file]
+    jt.joinFiles = True
+    jobid = drmaa_session.runJob(jt) 
+
     job = {'id': individual,
            'testcase': testcase_number,
            'sleep_time': sleep_time,
-           'output_file': output_file}
+           'output_file': output_file,
+           'jobid': jobid}
     logging.debug("Add to ToDo - Middle - %s assigned for %isec" % (individual, sleep_time))
     todoQ.put(job, block=False)
     logging.info("Add to ToDo - Done - Success %s" % (individual))
 
 
-def fake_grid_engine(event, todoQ, fake_qsubQ):
+def check_if_running(event, drmaa_session, todoQ, runningQ, finishedQ):
     try:
         while not event.is_set():
-            #time.sleep(1)
-            logging.debug("Add to Grid - Start")
+            logging.debug("Add to Running - Start")
             try:
                 job = todoQ.get(block=False)
             except queue.Empty:
-                # nothing to add to add to fake_qsub
-                logging.info("Add to Grid - Done - ToDo empty")
-                continue
-
-            logging.debug("Add to Grid - Middle - %s" % job['id'])
-            try:
-                fake_qsubQ.put(job, block=False)
-                cmd = "bash run.sh %i %s" % (job['sleep_time'], job['output_file'])
-                #os.system(cmd)
-                subprocess.Popen(cmd.split(" "))#, creationflags=subprocess.CREATE_NEW_CONSOLE)
-                logging.info("Add to Grid - Done - %s Success" % job['id'])
-            except queue.Full:
-                # can't be qsub, add back to todoQ
-                todoQ.put(job, block=False)
-                logging.info("Add to Grid - Done - %s Grid full" % job['id'])
-    except Exception as e:
-        logging.critical("'fake_grid_engine' Thread Failed - %s" % e)
-        event.set()
-
-
-def check_if_running(event, fake_qsubQ, runningQ):
-    try:
-        while not event.is_set():
-            #time.sleep(1)
-            logging.debug("Add to Running - Start")
-            try:
-                job = fake_qsubQ.get(block=False)
-            except queue.Empty:
-                logging.info("Add to Running - Done - Grid empty")
+                logging.info("Add to Running - Done - todoQ empty")
                 continue
 
             logging.debug("Add to Running - Middle - %s" % job['id'])
-            runningQ.put(job, block=False)
-            logging.info("Add to Running - Done - Success - %s" % job['id'])
+            react_job_status(drmaa_session, job, todoQ, runningQ, finishedQ)
+            logging.info("Add to Running - Done - %s" % job['id'])
     except Exception as e:
         logging.critical("'check_if_running' Thread Failed - %s" % e)
         event.set()
 
 
-def check_if_finished(event, runningQ, finishedQ):
+def check_if_finished(event, todoQ, runningQ, finishedQ):
     try:
         while not event.is_set():
-            #time.sleep(1)
             logging.debug("Add to Finished - Start")
             try:
                 job = runningQ.get(block=False)
@@ -87,18 +116,14 @@ def check_if_finished(event, runningQ, finishedQ):
                 continue
 
             logging.debug("Add to Finished - Middle - %s" % job['id'])
-            if os.path.exists(job['output_file']):
-                finishedQ.put(job, block=False)
-                logging.info("Add to Finished - Done - %s finished" % job['id'])
-            else:
-                runningQ.put(job, block=False)
-                logging.info("Add to Finished - Done - %s still running" % job['id'])
+            react_job_status(drmaa_session, job, todoQ, runningQ, finishedQ)
+            logging.info("Add to Finished - Done - %s" % job['id'])
     except Exception as e:
         logging.critical("'check_if_finished' Thread Failed - %s" % e)
         event.set()
 
 
-def get_scores2(finishedQ, results_granular, results_aggregate):
+def get_scores(drmaa_session, finishedQ, results_granular, results_aggregate):
     logging.debug("Main Loop - Get Scores - Start")
     while True:
         try:
@@ -107,21 +132,16 @@ def get_scores2(finishedQ, results_granular, results_aggregate):
             logging.info("Main Loop - Get Scores - Done - Finished empty")
             return results_granular, results_aggregate
 
-        return np.ones((10,)), np.ones((10,))
 
-
-def get_scores(finishedQ, results_granular, results_aggregate):
-    logging.debug("Main Loop - Get Scores - Start")
-    while True:
-        try:
-            job = finishedQ.get(block=False)
-        except queue.Empty:
-            logging.info("Main Loop - Get Scores - Done - Finished empty")
-            return results_granular, results_aggregate
-			
-        with open(job['output_file'], 'r') as f:
-            val = int(f.readline()[:-1])
-        logging.debug("Main Loop - Get Scores - %s scored %i" % (job['id'], val))
+        job_status = drmaa_session.jobStatus(job['jobid'])
+        if job_status in drmaa.JobState.DONE:
+            # finished normally!
+            with open(job['output_file'], 'r') as f:
+                val = int(f.readline()[:-1])
+            logging.debug("Main Loop - Get Scores - %s scored %i" % (job['id'], val))
+        else:
+            # must have failed
+            val = None
 
         if job['id'] in results_granular:
             results_granular[job['id']].append(val)
@@ -130,11 +150,14 @@ def get_scores(finishedQ, results_granular, results_aggregate):
         logging.debug("Main Loop - Get Scores - %s scored recorded" % (job['id']))
 
 
-        if len(results_granular[job['id']]) == 50:
+        if len(results_granular[job['id']]) == TESTCASE_COUNT:
             # job done
-            results_aggregate[job['id']] = np.array(results_granular[job['id']]).mean()
+            results_np = np.array(results_granular[job['id']])
+            failed_count = len(results_np[results_np==None])
+            results_np = results_np[results_np!=None]
+            results_aggregate[job['id']] = results_np.mean()
             del results_granular[job['id']]
-            logging.debug("Main Loop - Get Scores - %s scored against ALL to %.2f" % (job['id'], results_aggregate[job['id']]))
+            logging.debug("Main Loop - Get Scores - %s scored against ALL to %.2f - %i failed" % (job['id'], results_aggregate[job['id']], failed_count))
 
         logging.info("Main Loop - Get Scores - Done - %s" % job['id'])
 
@@ -148,11 +171,11 @@ def status_check(allQs):
         #size.append(Q.qsize())
         sizes += (Q.qsize(),)
 
-    logging.debug("Status Check -  %s %s %s %s" % (sizes))
-    print("Queue sizes: %s %s %s %s" % (sizes)); sys.stdout.flush()
+    logging.debug("Status Check -  %s %s %s" % (sizes))
+    print("Queue sizes: %s %s %s" % (sizes)); sys.stdout.flush()
 
 
-def main_loop(event, allQs):
+def main_loop(event, drmaa_session, todoQ, runningQ, finishedQ):
     results_granular = {}
     results_aggregate = {}
     try:
@@ -160,10 +183,10 @@ def main_loop(event, allQs):
         while not event.is_set():
             logging.debug("Main Loop - While loop")
             # check finished queue
-            status_check(allQs)
-            results_granular, results_aggregate = get_scores(allQs[-1], results_granular, results_aggregate)
+            status_check([todoQ, runningQ, finishedQ])
+            results_granular, results_aggregate = get_scores(drmaa_session, finishedQ, results_granular, results_aggregate)
             if len(results_aggregate) == POPULATION_SIZE:
-    			event.set()
+                event.set()
                 logging.info("Main Loop - Terminating!")
             else:
                 logging.debug("Main Loop - Sleep")
@@ -189,19 +212,19 @@ if __name__ == "__main__":
 
     # make queues
     todoQ = queue.Queue(maxsize=0)
-    fake_qsubQ = queue.Queue(maxsize=50)
     runningQ = queue.Queue(maxsize=0)
     finishedQ = queue.Queue(maxsize=0)
 
     logging.basicConfig(format="%(asctime)s: %(message)s",
                         level=logging.DEBUG,
                         datefmt="%H:%M:%S")
-
     rootLogger = logging.getLogger()
-
     fileHandler = logging.FileHandler(os.path.join(OUTPUT_DIR, "file.log"))
     rootLogger.addHandler(fileHandler)
 
+    session = drmaa.Session()
+    session.initialize()
+    response = session.contact
 
     for generation in range(GENERATION_LIMIT):
         event = threading.Event()
@@ -213,14 +236,16 @@ if __name__ == "__main__":
                 queue_job(individual=indiv_id,
                           testcase_number=testcase,
                           output_dir=OUTPUT_DIR,
-                          todoQ=todoQ)
+                          todoQ=todoQ,
+                          drmaa_session=session)
 
         logging.warning("Main Loop - Population Sent to Eval")
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-            executor.submit(fake_grid_engine, event, todoQ, fake_qsubQ)
-            executor.submit(check_if_running, event, fake_qsubQ, runningQ)
-            executor.submit(check_if_finished, event, runningQ, finishedQ)
-            future = executor.submit(main_loop, event, [todoQ, fake_qsubQ, runningQ, finishedQ]) #https://docs.python.org/3/library/concurrent.futures.html#concurrent.futures.Executor.submit
+            executor.submit(check_if_running, event, session, todoQ, runningQ, finishedQ)
+            executor.submit(check_if_finished, event, session, todoQ, runningQ, finishedQ)
+            future = executor.submit(main_loop, event, session, todoQ, runningQ, finishedQ) #https://docs.python.org/3/library/concurrent.futures.html#concurrent.futures.Executor.submit
 
         results_aggregate = future.result()
         logging.info("FINAL RESULTS: %s" % results_aggregate)
+        break
+    session.exit()
