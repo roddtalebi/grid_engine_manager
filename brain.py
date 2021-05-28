@@ -30,6 +30,7 @@ def queue_job(individual, testcase_number, output_dir, todoQ):
 
 def fake_grid_engine(event, todoQ, fake_qsubQ):
     while not event.is_set():
+        #time.sleep(1)
         logging.debug("Add to Grid - Start")
         try:
             job = todoQ.get(block=False)
@@ -53,6 +54,7 @@ def fake_grid_engine(event, todoQ, fake_qsubQ):
 
 def check_if_running(event, fake_qsubQ, runningQ):
     while not event.is_set():
+        #time.sleep(1)
         logging.debug("Add to Running - Start")
         try:
             job = fake_qsubQ.get(block=False)
@@ -67,6 +69,7 @@ def check_if_running(event, fake_qsubQ, runningQ):
 
 def check_if_finished(event, runningQ, finishedQ):
     while not event.is_set():
+        #time.sleep(1)
         logging.debug("Add to Finished - Start")
         try:
             job = runningQ.get(block=False)
@@ -83,7 +86,7 @@ def check_if_finished(event, runningQ, finishedQ):
             logging.info("Add to Finished - Done - %s still running" % job['id'])
 
 
-def get_scores(finishedQ, results_granular, results_aggregate):
+def get_scores2(finishedQ, results_granular, results_aggregate):
     logging.debug("Main Loop - Get Scores - Start")
     while True:
         try:
@@ -92,18 +95,30 @@ def get_scores(finishedQ, results_granular, results_aggregate):
             logging.info("Main Loop - Get Scores - Done - Finished empty")
             return results_granular, results_aggregate
 
+        return np.ones((10,)), np.ones((10,))
+
+
+def get_scores(finishedQ, results_granular, results_aggregate):
+    logging.debug("Main Loop - Get Scores - Start")
+    while True:
+        try:
+            job = finishedQ.get(block=False)
+        except queue.Empty:
+            logging.info("Main Loop - Get Scores - Done - Finished empty")
+            return results_granular, results_aggregate
+			
         with open(job['output_file'], 'r') as f:
-            val = int(f.readline[:-1])
+            val = int(f.readline()[:-1])
         logging.debug("Main Loop - Get Scores - %s scored %i" % (job['id'], val))
 
-        if job['id'] in results:
+        if job['id'] in results_granular:
             results_granular[job['id']].append(val)
         else:
             results_granular[job['id']] = [val]
         logging.debug("Main Loop - Get Scores - %s scored recorded" % (job['id']))
 
 
-        if len(results_granular[job['id']] == 50):
+        if len(results_granular[job['id']]) == 50:
             # job done
             results_aggregate[job['id']] = np.array(results_granular[job['id']]).mean()
             del results_granular[job['id']]
@@ -125,22 +140,25 @@ def status_check(allQs):
     print("Queue sizes: %s %s %s %s" % (sizes)); sys.stdout.flush()
 
 
-def main_loop(event, allQs)
+def main_loop(event, allQs):
+    logging.debug("Main Loop - Start")
     results_granular = {}
     results_aggregate = {}
     still_running = True
     while still_running:
+        logging.debug("Main Loop - While loop")
         # check finished queue
         status_check(allQs)
-        results_granular, results_aggregate = get_scores(finishedQ, results_granular, results_aggregate)
+        results_granular, results_aggregate = get_scores(allQs[-1], results_granular, results_aggregate)
         if len(results_aggregate) == POPULATION_SIZE:
             still_running = False
-            event.set()
+			event.set()
+            logging.info("Main Loop - Terminating!")
         else:
             logging.debug("Main Loop - Sleep")
             time.sleep(5)
 
-    return results_granular, results_aggregate
+    return results_aggregate
 
 
 if __name__ == "__main__":
@@ -150,9 +168,9 @@ if __name__ == "__main__":
     then collect their scores.
     '''
     POPULATION_SIZE = int(10)
-    GENERATION_LIMIT = 10
+    GENERATION_LIMIT = 5
     TESTCASE_COUNT = 50
-    OUTPUT_DIR = "./test_number_%i" % 2
+    OUTPUT_DIR = "./test_number_%i" % 0
     os.makedirs(OUTPUT_DIR, exist_ok=False)
 
     # make queues
@@ -160,13 +178,19 @@ if __name__ == "__main__":
     fake_qsubQ = queue.Queue(maxsize=50)
     runningQ = queue.Queue(maxsize=0)
     finishedQ = queue.Queue(maxsize=0)
-    event = threading.Event()
 
     logging.basicConfig(format="%(asctime)s: %(message)s",
                         level=logging.DEBUG,
                         datefmt="%H:%M:%S")
 
+    rootLogger = logging.getLogger()
+
+    fileHandler = logging.FileHandler(os.path.join(OUTPUT_DIR, "file.log"))
+    rootLogger.addHandler(fileHandler)
+
+
     for generation in range(GENERATION_LIMIT):
+        event = threading.Event()
         logging.warning("\nMain Loop - Starting Next Generation - %i" % generation)
 
         for i in range(POPULATION_SIZE):
@@ -178,10 +202,11 @@ if __name__ == "__main__":
                           todoQ=todoQ)
 
         logging.warning("Main Loop - Population Sent to Eval")
-        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
             executor.submit(fake_grid_engine, event, todoQ, fake_qsubQ)
             executor.submit(check_if_running, event, fake_qsubQ, runningQ)
             executor.submit(check_if_finished, event, runningQ, finishedQ)
-            results_granular, results_aggregate = executor.submit(main_loop, event, [todoQ, fake_qsubQ, runningQ, finishedQ])
+            future = executor.submit(main_loop, event, [todoQ, fake_qsubQ, runningQ, finishedQ]) #https://docs.python.org/3/library/concurrent.futures.html#concurrent.futures.Executor.submit
 
-
+        results_aggregate = future.result()
+        logging.info("FINAL RESULTS: %s" % results_aggregate)
