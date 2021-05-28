@@ -15,6 +15,7 @@ import logging
 
 
 def queue_job(individual, testcase_number, output_dir, todoQ):
+    while not event.is_set():
     logging.debug("Add to ToDo - Start - %s for __sec" % (individual))
     sleep_time = np.random.randint(30,90)
     output_file = os.path.join(output_dir, "%s_%i.txt" % (individual, testcase_number))
@@ -116,7 +117,7 @@ def status_check(allQs):
     sizes = ()
     for Q in allQs:
         #size.append(Q.qsize())
-        sizes += (Q.size,)
+        sizes += (Q.qsize,)
 
     logging.debug("Status Check -  %s %s %s %s" % (sizes))
     print("Queue sizes: %s %s %s %s" % (sizes)); sys.stdout.flush()
@@ -132,7 +133,7 @@ if __name__ == "__main__":
     POPULATION_SIZE = int(10)
     GENERATION_LIMIT = 10
     TESTCASE_COUNT = 50
-    OUTPUT_DIR = "./test_number_%i" % 1
+    OUTPUT_DIR = "./test_number_%i" % 2
     os.makedirs(OUTPUT_DIR, exist_ok=False)
 
     # make queues
@@ -140,6 +141,7 @@ if __name__ == "__main__":
     fake_qsubQ = queue.Queue(maxsize=50)
     runningQ = queue.Queue(maxsize=0)
     finishedQ = queue.Queue(maxsize=0)
+    event = threading.Event()
 
     logging.basicConfig(format="%(asctime)s: %(message)s",
                         level=logging.DEBUG,
@@ -172,6 +174,7 @@ if __name__ == "__main__":
             results_granular, results_aggregate = get_scores(finishedQ, results_granular, results_aggregate)
             if len(results_aggregate) == POPULATION_SIZE:
                 still_running = False
+                event.set()
             else:
                 logging.debug("Main Loop - Sleep")
                 time.sleep(5)
