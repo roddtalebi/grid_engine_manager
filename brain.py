@@ -28,7 +28,7 @@ def queue_job(individual, testcase_number, output_dir, todoQ):
     logging.info("Add to ToDo - Done - Success %s" % (individual))
 
 
-def fake_grid_engine(todoQ, fake_qsubQ):
+def fake_grid_engine(event, todoQ, fake_qsubQ):
     while not event.is_set():
         logging.debug("Add to Grid - Start")
         try:
@@ -51,7 +51,7 @@ def fake_grid_engine(todoQ, fake_qsubQ):
             logging.info("Add to Grid - Done - %s Grid full" % job['id'])
 
 
-def check_if_running(fake_qsubQ, runningQ):
+def check_if_running(event, fake_qsubQ, runningQ):
     while not event.is_set():
         logging.debug("Add to Running - Start")
         try:
@@ -65,7 +65,7 @@ def check_if_running(fake_qsubQ, runningQ):
         logging.info("Add to Running - Done - Success - %s" % job['id'])
 
 
-def check_if_finished(runningQ, finishedQ):
+def check_if_finished(event, runningQ, finishedQ):
     while not event.is_set():
         logging.debug("Add to Finished - Start")
         try:
@@ -125,6 +125,23 @@ def status_check(allQs):
     print("Queue sizes: %s %s %s %s" % (sizes)); sys.stdout.flush()
 
 
+def main_loop(event, allQs)
+    results_granular = {}
+    results_aggregate = {}
+    still_running = True
+    while still_running:
+        # check finished queue
+        status_check(allQs)
+        results_granular, results_aggregate = get_scores(finishedQ, results_granular, results_aggregate)
+        if len(results_aggregate) == POPULATION_SIZE:
+            still_running = False
+            event.set()
+        else:
+            logging.debug("Main Loop - Sleep")
+            time.sleep(5)
+
+    return results_granular, results_aggregate
+
 
 if __name__ == "__main__":
     '''
@@ -162,21 +179,9 @@ if __name__ == "__main__":
 
         logging.warning("Main Loop - Population Sent to Eval")
         with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-            executor.submit(fake_grid_engine, todoQ, fake_qsubQ)
-            executor.submit(check_if_running, fake_qsubQ, runningQ)
-            executor.submit(check_if_finished, runningQ, finishedQ)
-            #executor.submit(status_check, [todoQ, fake_qsubQ, runningQ, finishedQ])
+            executor.submit(fake_grid_engine, event, todoQ, fake_qsubQ)
+            executor.submit(check_if_running, event, fake_qsubQ, runningQ)
+            executor.submit(check_if_finished, event, runningQ, finishedQ)
+            results_granular, results_aggregate = executor.submit(main_loop, event, [todoQ, fake_qsubQ, runningQ, finishedQ])
 
-        results_granular = {}
-        results_aggregate = {}
-        still_running = True
-        while still_running:
-            # check finished queue
-            status_check([todoQ, fake_qsubQ, runningQ, finishedQ])
-            results_granular, results_aggregate = get_scores(finishedQ, results_granular, results_aggregate)
-            if len(results_aggregate) == POPULATION_SIZE:
-                still_running = False
-                event.set()
-            else:
-                logging.debug("Main Loop - Sleep")
-                time.sleep(5)
+
