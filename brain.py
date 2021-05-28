@@ -29,61 +29,73 @@ def queue_job(individual, testcase_number, output_dir, todoQ):
 
 
 def fake_grid_engine(event, todoQ, fake_qsubQ):
-    while not event.is_set():
-        #time.sleep(1)
-        logging.debug("Add to Grid - Start")
-        try:
-            job = todoQ.get(block=False)
-        except queue.Empty:
-            # nothing to add to add to fake_qsub
-            logging.info("Add to Grid - Done - ToDo empty")
-            continue
+    try:
+        while not event.is_set():
+            #time.sleep(1)
+            logging.debug("Add to Grid - Start")
+            try:
+                job = todoQ.get(block=False)
+            except queue.Empty:
+                # nothing to add to add to fake_qsub
+                logging.info("Add to Grid - Done - ToDo empty")
+                continue
 
-        logging.debug("Add to Grid - Middle - %s" % job['id'])
-        try:
-            fake_qsubQ.put(job, block=False)
-            cmd = "bash run.sh %i %s" % (job['sleep_time'], job['output_file'])
-            #os.system(cmd)
-            subprocess.Popen(cmd.split(" "))#, creationflags=subprocess.CREATE_NEW_CONSOLE)
-            logging.info("Add to Grid - Done - %s Success" % job['id'])
-        except queue.Full:
-            # can't be qsub, add back to todoQ
-            todoQ.put(job, block=False)
-            logging.info("Add to Grid - Done - %s Grid full" % job['id'])
+            logging.debug("Add to Grid - Middle - %s" % job['id'])
+            try:
+                fake_qsubQ.put(job, block=False)
+                cmd = "bash run.sh %i %s" % (job['sleep_time'], job['output_file'])
+                #os.system(cmd)
+                subprocess.Popen(cmd.split(" "))#, creationflags=subprocess.CREATE_NEW_CONSOLE)
+                logging.info("Add to Grid - Done - %s Success" % job['id'])
+            except queue.Full:
+                # can't be qsub, add back to todoQ
+                todoQ.put(job, block=False)
+                logging.info("Add to Grid - Done - %s Grid full" % job['id'])
+    except Exception as e:
+        logging.critical("'fake_grid_engine' Thread Failed - %s" % e)
+        event.set()
 
 
 def check_if_running(event, fake_qsubQ, runningQ):
-    while not event.is_set():
-        #time.sleep(1)
-        logging.debug("Add to Running - Start")
-        try:
-            job = fake_qsubQ.get(block=False)
-        except queue.Empty:
-            logging.info("Add to Running - Done - Grid empty")
-            continue
+    try:
+        while not event.is_set():
+            #time.sleep(1)
+            logging.debug("Add to Running - Start")
+            try:
+                job = fake_qsubQ.get(block=False)
+            except queue.Empty:
+                logging.info("Add to Running - Done - Grid empty")
+                continue
 
-        logging.debug("Add to Running - Middle - %s" % job['id'])
-        runningQ.put(job, block=False)
-        logging.info("Add to Running - Done - Success - %s" % job['id'])
+            logging.debug("Add to Running - Middle - %s" % job['id'])
+            runningQ.put(job, block=False)
+            logging.info("Add to Running - Done - Success - %s" % job['id'])
+    except Exception as e:
+        logging.critical("'check_if_running' Thread Failed - %s" % e)
+        event.set()
 
 
 def check_if_finished(event, runningQ, finishedQ):
-    while not event.is_set():
-        #time.sleep(1)
-        logging.debug("Add to Finished - Start")
-        try:
-            job = runningQ.get(block=False)
-        except queue.Empty:
-            logging.info("Add to Finished - Done - Running empty")
-            continue
+    try:
+        while not event.is_set():
+            #time.sleep(1)
+            logging.debug("Add to Finished - Start")
+            try:
+                job = runningQ.get(block=False)
+            except queue.Empty:
+                logging.info("Add to Finished - Done - Running empty")
+                continue
 
-        logging.debug("Add to Finished - Middle - %s" % job['id'])
-        if os.path.exists(job['output_file']):
-            finishedQ.put(job, block=False)
-            logging.info("Add to Finished - Done - %s finished" % job['id'])
-        else:
-            runningQ.put(job, block=False)
-            logging.info("Add to Finished - Done - %s still running" % job['id'])
+            logging.debug("Add to Finished - Middle - %s" % job['id'])
+            if os.path.exists(job['output_file']):
+                finishedQ.put(job, block=False)
+                logging.info("Add to Finished - Done - %s finished" % job['id'])
+            else:
+                runningQ.put(job, block=False)
+                logging.info("Add to Finished - Done - %s still running" % job['id'])
+    except Exception as e:
+        logging.critical("'check_if_finished' Thread Failed - %s" % e)
+        event.set()
 
 
 def get_scores2(finishedQ, results_granular, results_aggregate):
@@ -141,22 +153,24 @@ def status_check(allQs):
 
 
 def main_loop(event, allQs):
-    logging.debug("Main Loop - Start")
     results_granular = {}
     results_aggregate = {}
-    still_running = True
-    while still_running:
-        logging.debug("Main Loop - While loop")
-        # check finished queue
-        status_check(allQs)
-        results_granular, results_aggregate = get_scores(allQs[-1], results_granular, results_aggregate)
-        if len(results_aggregate) == POPULATION_SIZE:
-            still_running = False
-			event.set()
-            logging.info("Main Loop - Terminating!")
-        else:
-            logging.debug("Main Loop - Sleep")
-            time.sleep(5)
+    try:
+        logging.debug("Main Loop - Start")
+        while not event.is_set():
+            logging.debug("Main Loop - While loop")
+            # check finished queue
+            status_check(allQs)
+            results_granular, results_aggregate = get_scores(allQs[-1], results_granular, results_aggregate)
+            if len(results_aggregate) == POPULATION_SIZE:
+    			event.set()
+                logging.info("Main Loop - Terminating!")
+            else:
+                logging.debug("Main Loop - Sleep")
+                time.sleep(5)
+    except Exception as e:
+        logging.critical("'main_loop' Thread Failed - %s" % e)
+        event.set()
 
     return results_aggregate
 
