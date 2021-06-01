@@ -10,7 +10,7 @@ import time
 import drmaa
 
 
-with drmaa.Session as s:
+with drmaa.Session() as s:
     jt = s.createJobTemplate()
     jt.remoteCommand = os.path.join(os.getcwd(), 'run_simple.sh')
     jt.args = []
@@ -20,6 +20,7 @@ with drmaa.Session as s:
 
     #start = time.time()
     for _ in range(20):
+        time.sleep(0.5)
         print('\tChecking status -> %s' % (s.jobStatus(jobid)))
 
     print('Cleaning up')
